@@ -1,30 +1,35 @@
-require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
+const session = require('express-session');
+const KnexSessionStore = require('connect-session-knex')(session);
 const bcrypt = require('bcryptjs'); // *************************** added package and required it here
-const jwt = require('jsonwebtoken');
 
 const db = require('./database/dbConfig.js');
 
 const server = express();
 
+const sessionConfig = {
+  name: 'monkey',
+  secret: 'asfjaofuwruq04r3oj;ljg049fjq30j4jlajg40j40tjojasl;kjg',
+  cookie: {
+    maxAge: 1000 * 60 * 10,
+    secure: false, // only set it over https; in production you want this true.
+  },
+  httpOnly: true, // no js can touch this cookie
+  resave: false,
+  saveUninitialized: false,
+  store: new KnexSessionStore({
+    tablename: 'sessions',
+    sidfieldname: 'sid',
+    knex: db,
+    createtable: true,
+    clearInterval: 1000 * 60 * 60,
+  }),
+};
+
+server.use(session(sessionConfig)); // wires up session management
 server.use(express.json());
 server.use(cors());
-
-const generateToken = (user) => {
-  const payload = {
-    subject: user.userId,
-    username: user.username,
-    roles: ['sales', 'marketing'] // this will come from database
-  }
-  const secret = process.env.JWT_SECRET; // env variable
-
-  const options = {
-    expiresIn: '1h'
-  }
-
-  return jwt.sign(payload, secret, options)
-}
 
 server.post('/api/login', (req, res) => {
   // grab username and password from body
@@ -36,38 +41,23 @@ server.post('/api/login', (req, res) => {
     .then(user => {
       if (user && bcrypt.compareSync(creds.password, user.password)) {
         // passwords match and user exists by that username
-        // create a session > create a token
-        // library sent a cookie automatically > we send the token manually
-        const token = generateToken(user);
-        res.status(200).json({ message: 'welcome!', token });
+        req.session.user = user.id;
+        res.status(200).json({ message: 'welcome!' });
       } else {
         // either username is invalid or password is wrong
         res.status(401).json({ message: 'you shall not pass!!' });
       }
     })
-    .catch(err => res.json({message: 'error loging in', err}));
+    .catch(err => res.json(err));
 });
 
 function protected(req, res, next) {
-  // token is normally sent in the Authorization header
-  const token = req.headers.authorization;
-
-  if(token) {
-    // is it valid
-    jwt.verify(token, process.env.JWT_SECRET, (err, decodedToken) => {
-      if(err) {
-        //token invalid
-        res.status(401).json({message: 'invalid token'})
-      } else {
-        // token is good
-        req.decodedToken = decodedToken;
-        next();
-        
-      }
-    })
+  if (req.session && req.session.user) {
+    // they're logged in, go ahead and provide access
+    next();
   } else {
-    // bounce
-    res.status(401).json({message: 'no token provided'})
+    // bounce them
+    res.status(401).json({ you: 'shall not pass!!' });
   }
 }
 
@@ -83,7 +73,7 @@ server.get('/api/me', protected, (req, res) => {
     .catch(err => res.send(err));
 });
 
-server.get('/api/users', protected, checkRole('sales'), (req, res) => {
+server.get('/api/users', protected, (req, res) => {
   db('users')
     .select('id', 'username', 'password') // ***************************** added password to the select
     .then(users => {
@@ -92,15 +82,19 @@ server.get('/api/users', protected, checkRole('sales'), (req, res) => {
     .catch(err => res.send(err));
 });
 
-function checkRole(role) {
-  return (req, res, next) => {
-    if(req.decodedToken && req.decodedToken.roles.includes(role)){
-      next();
-    } else {
-      res.status(403).json({message: 'you do not have acess to this resource'});
-    }
+server.get('/api/logout', (req, res) => {
+  if (req.session) {
+    req.session.destroy(err => {
+      if (err) {
+        res.send('you can never leave');
+      } else {
+        res.send('bye');
+      }
+    });
+  } else {
+    res.end();
   }
-}
+});
 
 server.post('/api/register', (req, res) => {
   // grab username and password from body
